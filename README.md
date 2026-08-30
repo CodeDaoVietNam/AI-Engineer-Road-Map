@@ -14,7 +14,7 @@ Study one main topic per session. During the System Design path, use advanced AI
 - `learning-paths/00-setup/` — environment and prerequisite checks.
 - `learning-paths/01-system-design-rag/` — the primary eight-week path.
 - `learning-paths/02-advanced-ai-cloud/` — the follow-on advanced path.
-- `capstone/enterprise-document-rag-assistant/` — one project that grows with the curriculum.
+- [`capstone/enterprise-document-agent/`](capstone/enterprise-document-agent/README.md) — the canonical local-first Enterprise Document Agent foundation and its M0 documentation index.
 - `docs/` — architecture diagrams, decision records, system-design notes, and portfolio material.
 - `resources/` — curated study guides.
 - `templates/` — reusable files for sessions, modules, experiments, and decisions.

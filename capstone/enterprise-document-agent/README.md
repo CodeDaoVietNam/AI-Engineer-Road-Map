@@ -1,96 +1,129 @@
 # Enterprise Document Agent
 
-Enterprise Document Agent helps an enterprise receive, inspect, and review
-supplier-onboarding records. It processes documents asynchronously, extracts
-structured data and evidence, applies deterministic validation rules, and
-supports grounded questions with citations. The final decision always belongs
-to a human reviewer.
+The Enterprise Document Agent is a local-first foundation for receiving,
+inspecting, and reviewing supplier-onboarding records. A supplier case accepts
+five English PDF document types: `company_profile`, `business_registration`,
+`tax_registration`, `bank_information_form`, and `quotation`. Documents are
+processed asynchronously, structured fields and evidence are extracted, and
+deterministic validation rules surface issues for a human decision-maker.
+Agents may classify, extract, retrieve, cite, and raise alerts, but they are
+read-only. Only a Reviewer or Tenant Admin can approve or reject a case.
 
-## MVP boundary
+## Current status: M0 Foundation
 
-Each supplier case accepts these five English PDF document types:
+M0 is the documentation and boundary foundation. The repository shape,
+requirements, API and security contracts, architecture, operations, evaluation
+plan, and accepted architecture decisions are in place. Application code,
+React/FastAPI runtime wiring, migrations, Compose services, and build tooling
+are intentionally not implemented yet; command snippets in the linked
+operations documents are targets for later milestones, not a claim of a
+runnable system today.
 
-1. `company_profile`
-2. `business_registration`
-3. `tax_registration`
-4. `bank_information_form`
-5. `quotation`
+## Source and package map
 
-Each file is limited to 20 MB and 50 pages. Corrupted, password-protected, or
-invalid files are rejected clearly.
-
-The product has three user roles:
-
-- **Operator** creates suppliers and cases, uploads or replaces documents, and
-  views processing results.
-- **Reviewer** has Operator permissions and may approve or reject a case.
-- **Tenant Admin** manages memberships, views audit records, and has all review
-  permissions.
-
-AI may classify documents, extract fields, find evidence, and raise alerts.
-Deterministic workflows are the sole owners of writes and state transitions.
-The deterministic rule engine owns pass/fail evaluation. Only a Reviewer or
-Tenant Admin can approve or reject a case; the agent is read-only and cannot
-change case data or state.
-
-## Local-first architecture
-
-This self-contained capstone is a modular monolith with an asynchronous worker:
-React + TypeScript + Vite for `web`, FastAPI for `api`, and a shared-core
-ingestion `worker`. Local development uses PostgreSQL 16 with pgvector, MinIO,
-RabbitMQ, local JWT, and model-provider adapters. Azure and Microsoft Foundry
-credentials are never required for local work; Azure support is provided later
-through adapters.
-
-The capstone must not import code from `learning-paths/`, `resources/`, or any
-directory outside this root.
-
-## Repository map
-
-The following structure is introduced progressively during M0. All application
-source, dependencies, tests, infrastructure, and project documentation remain
-inside this directory so it can later become its own repository.
+All project-owned files stay below this directory so the capstone can be
+extracted as a self-contained repository.
 
 ```text
 enterprise-document-agent/
-├── apps/                 # React web, FastAPI API, and ingestion worker
+├── apps/                 # planned web, API, and asynchronous worker boundaries
 ├── packages/             # core domain, contracts, and infrastructure adapters
-├── migrations/           # database migrations
-├── infrastructure/       # local and Azure deployment assets
-├── evaluation/           # datasets, ground truth, metrics, and generated reports
-├── tests/                # integration, end-to-end, security, and performance tests
-├── docs/                 # product, architecture, API, security, and operations docs
-├── compose.yml           # local service topology (added in M0)
-├── Makefile              # developer commands (added in M0)
-├── .env.example          # non-secret local configuration names
-└── AGENTS.md             # contributor constraints
+├── docs/                 # requirements, design, contracts, operations, ADRs
+├── infrastructure/       # local and Azure deployment boundaries
+├── evaluation/           # datasets, ground truth, metrics, and reports
+├── migrations/           # database migration boundary
+├── tests/                # integration, end-to-end, security, performance
+├── .env.example          # safe configuration names only
+└── AGENTS.md             # contributor and boundary constraints
 ```
 
-## Milestones
+The intended runtime is a modular monolith with an asynchronous worker. The
+web app consumes published API contracts; the API and worker compose core,
+contracts, and adapters; and `packages/core` never imports framework, queue,
+storage-SDK, or Azure implementation details.
 
-1. **M0 Foundation** — repository boundary, documentation, Compose, CI, and health checks.
-2. **M1 Core domain** — local auth, tenancy/RBAC, suppliers, cases, documents, and migrations.
-3. **M2 Reliable ingestion** — storage, outbox, RabbitMQ, worker, retries, checkpoints, and idempotency.
-4. **M3 Document intelligence** — classification, extraction, evidence, normalization, and validation.
-5. **M4 RAG and Agent** — chunking, hybrid retrieval, reranking, citation validation, and read-only tools.
-6. **M5 Human review** — dashboard, PDF highlights, review decisions, optimistic locking, and audit.
-7. **M6 Evaluation and hardening** — synthetic data, evaluation, security/failure/load tests, and telemetry.
-8. **M7 Azure deployment** — infrastructure as code, Azure adapters, identity, secrets, CI/CD, monitoring, and cost controls.
+## M0 documentation index
 
-## Milestone-target commands
+### Requirements
 
-The commands below are targets for **after M1**. They are intentionally not
-executable yet because this M0 task creates documentation and scaffolding only,
-not application code or build tooling.
+- [Product requirements](docs/requirements/product-requirements.md)
+- [Functional requirements](docs/requirements/functional-requirements.md)
+- [Non-functional requirements](docs/requirements/non-functional-requirements.md)
 
-```bash
-cp .env.example .env
-docker compose up -d
-make api-dev
-make worker-dev
-make web-dev
-make test
-```
+### Architecture and data model
 
-When these commands are implemented, local configuration must remain
-non-secret, and validation must include tenant-isolation tests.
+- [System overview](docs/architecture/system-overview.md)
+- [Ingestion pipeline](docs/architecture/ingestion-pipeline.md)
+- [Extraction and validation](docs/architecture/extraction-validation.md)
+- [Retrieval and Agent](docs/architecture/retrieval-agent.md)
+- [Domain model](docs/data-model/domain-model.md)
+- [State machines](docs/data-model/state-machines.md)
+
+### API and security
+
+- [API contract](docs/api/api-contract.md)
+- [Authorization matrix](docs/api/authorization-matrix.md)
+- [Security model](docs/security/security-model.md)
+- [Failure modes](docs/security/failure-modes.md)
+
+### Evaluation and operations
+
+- [Evaluation strategy](docs/evaluation/evaluation-strategy.md)
+- [Local development](docs/operations/local-development.md)
+- [Observability](docs/operations/observability.md)
+- [Azure mapping](docs/operations/azure-mapping.md)
+
+### Architecture decisions
+
+- [ADR 0001: Modular monolith](docs/decisions/0001-modular-monolith.md)
+- [ADR 0002: Local-first adapters](docs/decisions/0002-local-first-adapters.md)
+- [ADR 0003: Human-in-the-loop](docs/decisions/0003-human-in-the-loop.md)
+- [ADR 0004: Deterministic rule engine](docs/decisions/0004-deterministic-rule-engine.md)
+- [ADR 0005: Read-only Agent](docs/decisions/0005-read-only-agent.md)
+
+### Boundary guides
+
+- [Contributor constraints](AGENTS.md)
+- [API app boundary](apps/api/README.md)
+- [Web app boundary](apps/web/README.md)
+- [Worker boundary](apps/worker/README.md)
+- [Core package boundary](packages/core/README.md)
+- [Contracts package boundary](packages/contracts/README.md)
+- [Adapters package boundary](packages/adapters/README.md)
+- [Local infrastructure boundary](infrastructure/local/README.md)
+- [Azure infrastructure boundary](infrastructure/azure/README.md)
+
+## Milestone checklist
+
+- [x] **M0 Foundation:** establish the repository boundary and document
+  requirements, architecture, contracts, operations, evaluation, and ADRs.
+- [ ] **M1 Core domain:** implement local authentication, tenancy/RBAC,
+  suppliers, cases, documents, and migrations.
+- [ ] **M2 Reliable ingestion:** implement storage, outbox, RabbitMQ,
+  checkpoints, retries, and idempotency.
+- [ ] **M3 Document intelligence:** implement classification, extraction,
+  evidence, normalization, and deterministic validation.
+- [ ] **M4 RAG and Agent:** implement hybrid retrieval, reranking, citation
+  validation, and read-only tools.
+- [ ] **M5 Human review:** implement the dashboard, PDF highlights, review
+  decisions, optimistic locking, and audit views.
+- [ ] **M6 Evaluation and hardening:** add synthetic evaluation, security,
+  failure, load, and telemetry tests.
+- [ ] **M7 Azure deployment:** add Azure adapters, infrastructure, identity,
+  secrets, CI/CD, monitoring, and cost controls after local gates pass.
+
+## Local first, Azure later
+
+Local development is the baseline: PostgreSQL 16 with pgvector, MinIO,
+RabbitMQ, local JWT, and deterministic fake or mock model adapters. It must not
+require Azure or Microsoft Foundry credentials. Azure services are provider
+implementations behind the same ports and are introduced only after the local
+evaluation baseline passes; see the [Azure mapping](docs/operations/azure-mapping.md)
+for the reversible migration gates and quota caveats.
+
+## Next milestone
+
+The next milestone is **M1 Core domain**: implement the domain entities and
+use cases in `packages/core`, publish schemas and ports in `packages/contracts`,
+and add the local authentication, tenant membership, supplier, case, document,
+and migration behavior described by the M0 contracts.
