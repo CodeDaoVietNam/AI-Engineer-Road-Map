@@ -198,9 +198,10 @@ Agent trả refusal rõ ràng, không suy đoán, khi:
 - câu hỏi yêu cầu dữ liệu ngoài case/tenant được ủy quyền;
 - câu hỏi yêu cầu write, state transition, severity override hoặc approval;
 - semantically refusal-required request mà grounding không hoàn tất dù required
-  dependencies khả dụng; technical tool/budget/timeout failure khi dependency
-  không khả dụng đi theo availability/degraded-operation contract (ví dụ `503
-  CHAT_GROUNDING_UNAVAILABLE`), không phải natural-language refusal.
+  dependencies khả dụng;
+- mọi technical tool/budget/timeout failure trả `503
+  CHAT_GROUNDING_UNAVAILABLE` theo availability/degraded-operation contract và
+  không bao giờ vào semantic natural-language refusal denominator.
 
 Refusal có thể nêu loại evidence còn thiếu hoặc hướng người dùng mở tài liệu cho
 review, nhưng không tiết lộ resource tồn tại ở tenant khác. Mục tiêu correct
