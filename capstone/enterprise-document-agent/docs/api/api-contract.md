@@ -18,8 +18,10 @@ Authenticated identity và active `Membership` là nguồn duy nhất của
 5. resource state/version cho phép action.
 
 Không request body, query, path, model output hoặc Agent tool argument nào được
-dùng làm nguồn authoritative cho tenant identity. Lookup cross-tenant trả cùng
-not-found envelope như resource không tồn tại để không lộ sự tồn tại.
+dùng làm nguồn authoritative cho tenant identity. Lookup cross-tenant luôn trả
+`404 RESOURCE_NOT_FOUND`, cùng envelope như resource không tồn tại, để không lộ
+sự tồn tại. `401` chỉ dành cho unauthenticated identity; `403` chỉ dành cho
+inactive membership/role denial không phụ thuộc resource existence.
 
 ## HTTP, request ID và envelopes
 
@@ -79,16 +81,38 @@ status mang class lỗi; client branch theo stable `error.code`, không parse
 
 `Idempotency-Key` là header bắt buộc cho create supplier/case, upload,
 reprocess, chat và review decision. Key là opaque, duy nhất trong scope
-authenticated tenant + route + actor trong retention window. Cùng key và cùng
-canonical request trả lại status/body ban đầu; cùng key với payload khác trả
-`409 Conflict` và `IDEMPOTENCY_KEY_REUSED`. Key không thay worker idempotency
-`document_id + pipeline_version`.
+authenticated tenant + route + actor trong retention window. Canonical request
+fingerprint gồm HTTP method + path, canonical payload, exact `If-Match` value và,
+với upload, SHA-256 của byte stream đã validate. Filename, multipart boundary và
+request ID không làm thay đổi fingerprint.
+
+Sau khi xác minh identity, active membership, role permission và resource thuộc
+authenticated tenant, handler lookup/reserve idempotency record **trước** mọi
+mutable resource-state, active-snapshot hoặc optimistic-version guard. Cùng key
+và cùng fingerprint trả nguyên HTTP status, headers cần thiết và body đã lưu;
+cùng key với fingerprint khác trả `409 Conflict` và
+`IDEMPOTENCY_KEY_REUSED`. Với upload, server phải stream có giới hạn để validate
+và tính SHA-256 trước khi hoàn tất comparison; chưa có durable object/business
+side effect cho đến khi replay/guards đã được giải quyết.
+
+Write thành công lưu idempotency key, fingerprint, business record/result và
+serialized response atomically trong cùng transaction. Vì vậy retry review cùng
+key/fingerprint trả lại original `201` kể cả decision đầu đã đổi case thành
+`APPROVED`/`REJECTED` và case version hiện tại không còn khớp `If-Match`. Chỉ
+request mới đi tiếp tới mutable state/version guards. Key không thay worker
+idempotency `document_id + pipeline_version`.
 
 Case responses trả `ETag: "case-v12"`. Mutation document/reprocess/review mang
 `If-Match: "case-v12"`; thiếu precondition trả `428 PRECONDITION_REQUIRED`, stale
 version trả `409 Conflict` với `CASE_VERSION_CONFLICT`. Server compare-and-set
 case version, active document/result set và active validation pointer trong
 transaction; client không được dùng last-write-wins.
+
+Membership detail response trả version và `ETag: "membership-v7"`.
+`PATCH /api/v1/memberships/{membership_id}` bắt buộc `If-Match`; server
+compare-and-set target membership version cùng role/active update và audit
+event. Thiếu header trả `428 PRECONDITION_REQUIRED`; stale version trả `409 Conflict` với
+`MEMBERSHIP_VERSION_CONFLICT` và không ghi đè update đồng thời.
 
 ## Endpoint catalog
 
@@ -97,6 +121,7 @@ transaction; client không được dùng last-write-wins.
 | `POST` | `/api/v1/auth/login` | Local JWT login; provider adapter có thể thay thế | `200` |
 | `GET` | `/api/v1/auth/me` | Identity, active tenant membership và role hiện hành | `200` |
 | `GET` | `/api/v1/memberships` | Tenant Admin liệt kê membership tenant | `200` |
+| `GET` | `/api/v1/memberships/{membership_id}` | Tenant Admin đọc membership version/ETag | `200` |
 | `PATCH` | `/api/v1/memberships/{membership_id}` | Tenant Admin đổi role/active status | `200` |
 | `GET` | `/api/v1/suppliers` | Liệt kê supplier tenant-scoped | `200` |
 | `POST` | `/api/v1/suppliers` | Tạo supplier, server gán tenant | `201` |
@@ -147,6 +172,24 @@ nào nhận `tenant_id` làm authorization input.
 `tenant_id` ở response chỉ mô tả server-derived context; gửi lại giá trị này
 không cấp quyền.
 
+### Membership update
+
+Tenant Admin đọc membership version/ETag rồi gọi
+`PATCH /api/v1/memberships/{membership_id}` với
+`If-Match: "membership-v7"`:
+
+```json
+{
+  "role": "Reviewer",
+  "active": true
+}
+```
+
+Response `200` trả version mới và `ETag: "membership-v8"`. Server load target
+bằng authenticated tenant predicate, chạy compare-and-set trên version `7`, cập
+nhật membership và ghi audit atomically. Retry không được bỏ qua permission;
+stale update trả `409 MEMBERSHIP_VERSION_CONFLICT`.
+
 ### Supplier và case
 
 `POST /api/v1/suppliers` với `Idempotency-Key`:
@@ -182,15 +225,32 @@ optional `replaces_document_id`; `document_type` là một trong
 `company_profile`, `business_registration`, `tax_registration`,
 `bank_information_form`, `quotation`.
 
-Sau khi PDF ≤ 20 MB, ≤ 50 pages đã được xác minh, object write durable, và
-`Document` + initial `ProcessingRun(QUEUED)` + `DocumentUploaded` outbox row đã
-commit atomically, response là `202 Accepted`:
+Server phân biệt hai command, không tự suy từ filename:
+
+- **new-slot upload:** chưa có active `Document` cho
+  `tenant_id + case_id + document_type`; `replaces_document_id` phải vắng mặt;
+- **replacement:** đã có active document cho type đó;
+  `replaces_document_id` là bắt buộc và phải trỏ chính xác active document cùng
+  authenticated tenant, case và document type.
+
+Nếu active slot đã tồn tại nhưng target bị thiếu/stale/inactive/sai case hoặc sai
+type trong cùng tenant, server trả `409 DOCUMENT_REPLACEMENT_CONFLICT`. Target
+cross-tenant luôn trả `404 RESOURCE_NOT_FOUND`. Case compare-and-set cùng unique
+constraint “một active document mỗi `tenant_id + case_id + document_type`” ngăn
+hai request đồng thời tạo hai active versions hoặc nối sai version lineage.
+
+Với initial upload từ `DRAFT`, sau khi PDF ≤ 20 MB, ≤ 50 pages đã được xác minh,
+object write durable, và `Document` + initial `ProcessingRun(QUEUED)` +
+`DocumentUploaded` outbox row đã commit atomically, response là
+`202 Accepted`:
 
 ```json
 {
   "data": {
     "document_id": "doc_01J...",
-    "status_url": "/api/v1/documents/doc_01J.../status"
+    "status_url": "/api/v1/documents/doc_01J.../status",
+    "case_state": "DOCUMENTS_UPLOADED",
+    "case_version": 2
   },
   "meta": {"request_id": "req_01J..."}
 }
@@ -216,8 +276,18 @@ state riêng với technical status:
 ```
 
 Reprocess dùng cùng headers, không nhận pipeline/model/tenant override, và trả
-`202 Accepted` với `processing_run_id` + `status_url`. Nó tạo run mới; không
-mutate `FAILED` run trở lại `RUNNING`.
+`202 Accepted` với `processing_run_id`, `status_url`, incremented `case_version`
+và `case_state: "PROCESSING"`. Nó tạo run mới; không mutate `FAILED` run trở lại
+`RUNNING`.
+
+Mọi document-set mutation sau initial upload — new-slot additional upload,
+replacement hoặc reprocess — trong cùng transaction phải invalidate active
+`ValidationRun`, clear affected active processing/index pointers, tăng case
+version, tạo run/outbox cần thiết và đưa case về `PROCESSING`. Quy tắc này áp
+dụng dù state trước là `DOCUMENTS_UPLOADED`, `PROCESSING`,
+`VALIDATION_REQUIRED` hay `READY_FOR_REVIEW`; pointer đã null vẫn được xử lý
+idempotently. Response `202 Accepted` của ba mutation này luôn trả
+`case_state: "PROCESSING"` và version mới.
 
 ### Evidence và extracted fields
 
@@ -249,6 +319,13 @@ signed URL thời hạn ngắn chỉ được tạo sau application-layer author
   "meta": {"request_id": "req_01J..."}
 }
 ```
+
+Với `bank_information_form`, `view_url` chỉ trỏ redacted derivative hoặc
+authorization-enforcing proxy đã mask account number; API không phát signed URL
+trực tiếp tới original bank PDF. Original object là internal-only cho worker và
+authorized recovery path. Future unmask ngoài MVP phải có permission riêng,
+step-up authentication, mục đích/TTL tối thiểu và immutable audit event; role
+Reviewer/Tenant Admin hiện tại tự nó không cấp unmask.
 
 `GET .../fields` returns `raw_value`, `normalized_value`, confidence,
 schema/pipeline lineage và evidence references. Bank account values are always
@@ -312,9 +389,13 @@ change case or processing state.
 }
 ```
 
-Server verifies `READY_FOR_REVIEW`, zero active `ERROR`, matching active
-`ValidationRun`, tenant ownership, permission and case version in one
-transaction. It creates immutable `ReviewDecision`, audit event and transition:
+Sau auth/membership/role/tenant-resource checks, server lookup idempotency record
+trước khi đọc mutable state/version. Existing same-fingerprint record replay
+original `201`; different fingerprint trả `IDEMPOTENCY_KEY_REUSED`. Chỉ request
+mới verify `READY_FOR_REVIEW`, zero active `ERROR`, matching active
+`ValidationRun` và case version. Transaction thành công atomically lưu
+idempotency key + canonical fingerprint + serialized `201` response, immutable
+`ReviewDecision`, audit event và transition:
 
 ```json
 {
@@ -337,15 +418,17 @@ infer a `REJECTED` decision.
 | Action | Allowed case state | Additional guard | Failure |
 |---|---|---|---|
 | Initial upload | `DRAFT` | No conflicting active document version | `CASE_STATE_CONFLICT` |
-| Additional upload/replacement | `DOCUMENTS_UPLOADED`, `PROCESSING`, `VALIDATION_REQUIRED`, `READY_FOR_REVIEW` | Current `If-Match`; replacement target active and same case | `CASE_STATE_CONFLICT` or `CASE_VERSION_CONFLICT` |
-| Reprocess | `DOCUMENTS_UPLOADED`, `PROCESSING`, `VALIDATION_REQUIRED`, `READY_FOR_REVIEW` | Active document; in `PROCESSING`, no `QUEUED`, `RUNNING` or `RETRY_PENDING` run for it | `PROCESSING_RUN_ACTIVE` or version/state conflict |
+| Additional new-slot upload | `DOCUMENTS_UPLOADED`, `PROCESSING`, `VALIDATION_REQUIRED`, `READY_FOR_REVIEW` | Slot absent, no replacement target, current `If-Match`; invalidate snapshot/pointers, bump version, return `PROCESSING` | `DOCUMENT_REPLACEMENT_CONFLICT`, state or version conflict |
+| Replacement | `DOCUMENTS_UPLOADED`, `PROCESSING`, `VALIDATION_REQUIRED`, `READY_FOR_REVIEW` | Target is exact active document in same tenant/case/type; invalidate snapshot/pointers, bump version, return `PROCESSING` | `DOCUMENT_REPLACEMENT_CONFLICT`, state or version conflict |
+| Reprocess | `DOCUMENTS_UPLOADED`, `PROCESSING`, `VALIDATION_REQUIRED`, `READY_FOR_REVIEW` | Active document; in `PROCESSING`, no `QUEUED`, `RUNNING` or `RETRY_PENDING` run; invalidate snapshot/pointers, bump version, return `PROCESSING` | `PROCESSING_RUN_ACTIVE` or version/state conflict |
 | Read current fields/evidence/issues/chat | Any same-tenant state | Only active document/result/snapshot; otherwise pending/refusal | `RESOURCE_NOT_FOUND` or safe pending result |
-| Review decision | `READY_FOR_REVIEW` | Reviewer/Tenant Admin, active validation snapshot, zero `ERROR`, current version | `CASE_NOT_READY_FOR_REVIEW` or `409 Conflict` |
+| Review decision, new key | `READY_FOR_REVIEW` | Reviewer/Tenant Admin, active validation snapshot, zero `ERROR`, current version | `CASE_NOT_READY_FOR_REVIEW` or `409 Conflict` |
+| Review decision, same key/fingerprint | Any current state after original commit | Auth/membership/role/resource tenant rechecked; replay precedes mutable guards | Replay original `201` response |
 | Document mutation after decision | Never in `APPROVED` or `REJECTED` | Future reopen requires separate contract | `CASE_STATE_CONFLICT` |
 
-Replacement/reprocess from validation/review states atomically invalidates the
-active validation and affected result/index pointers, increments case version
-and moves the case to `PROCESSING`. Stale worker output remains audit-only.
+Additional upload, replacement và reprocess atomically invalidate active
+validation and affected result/index pointers, increment case version and move
+the case to `PROCESSING`. Stale worker output remains audit-only.
 
 ## Stable error catalog
 
@@ -363,13 +446,20 @@ and moves the case to `PROCESSING`. Stale worker output remains audit-only.
 | `422` | `DOCUMENT_PAGE_LIMIT_EXCEEDED` | PDF exceeds 50 pages |
 | `409` | `CASE_STATE_CONFLICT` | Action not allowed in current business state |
 | `409` | `CASE_VERSION_CONFLICT` | Optimistic-lock version is stale |
+| `409` | `MEMBERSHIP_VERSION_CONFLICT` | Membership `If-Match` version is stale |
 | `409` | `CASE_NOT_READY_FOR_REVIEW` | State/snapshot/active `ERROR` blocks decision |
 | `409` | `PROCESSING_RUN_ACTIVE` | Reprocess would create a competing run |
+| `409` | `DOCUMENT_REPLACEMENT_CONFLICT` | New-slot/replacement target conflicts with active document slot/lineage |
 | `409` | `IDEMPOTENCY_KEY_REUSED` | Same key used with different canonical request |
 | `428` | `PRECONDITION_REQUIRED` | Required `If-Match` is missing |
 | `429` | `RATE_LIMITED` | Server-side tenant/actor budget exceeded |
 | `503` | `DEPENDENCY_UNAVAILABLE` | Required durable dependency is unavailable |
 | `503` | `CHAT_GROUNDING_UNAVAILABLE` | Grounded chat could not complete safely |
+
+Error precedence không được dựa trên resource existence: missing/invalid
+identity nhận `401`; active-membership/role denial nhận `403` trước resource
+lookup; sau khi các checks này pass, mọi cross-tenant resource, parent hoặc
+referenced-resource mismatch luôn nhận `404 RESOURCE_NOT_FOUND`.
 
 All unexpected `5xx` responses still use the envelope and request ID. They
 must not claim upload, review or processing success unless the documented

@@ -39,8 +39,9 @@ không retry vô hạn. Một job lỗi không chặn worker/job khác.
 | Hybrid retrieval/reranker failure | Reranker có thể dùng pinned hybrid order theo server policy; retrieval failure/zero result dẫn refusal, không bỏ tenant filter | Grounded chat trả refusal an toàn hoặc `503`; không hallucinated answer | Retry request sau dependency recovery; evidence/document remain in PostgreSQL/object storage | retrieval latency, candidate counts, zero-result, reranker fallback/refusal, filter scope |
 | Chat orchestrator/tool/budget failure | Request-level retry only if idempotency semantics safe; step/timeout/token/cost limit fail closed; isolated from ingestion/review | `200` refusal với safe reason hoặc `503 CHAT_GROUNDING_UNAVAILABLE`; case không đổi state | Re-run chat from active evidence after recovery; chat draft/model output không là source of truth | Agent steps, tool errors, timeout, token/cost budget, refusals by reason, request/case IDs |
 | Citation missing, invalid, stale, wrong page/chunk/hash hoặc insufficient evidence | Không retry bằng cách bỏ validator. Có thể reretrieve trong same bounded chat budget; cuối cùng refusal | `200` với `refused: true`, không unsupported claim/citation | Backend re-check active evidence/chunk from PostgreSQL/search projection; rebuild/reretrieve nếu stale | citation validation reason, stale/invalid rate, correct-refusal metric, document/result lineage |
-| Concurrent review decisions hoặc review vs replacement/reprocess | Không blind retry. Compare-and-set case version/active snapshot + idempotency key; one transaction wins | Loser nhận `409 Conflict` (`CASE_VERSION_CONFLICT`, `CASE_NOT_READY_FOR_REVIEW` hoặc idempotent original response) | Committed PostgreSQL `ReviewDecision`, case version và audit event là authoritative; reload case/snapshot | conflict/idempotent replay count, actor/case/version, decision latency, audit correlation |
-| Cross-tenant ID, parent-child mismatch, cursor/search/cache/citation/tool attempt | Không retry/fallback. Deny before read/model/write/signed URL; treat repeated attempts as security signal | `404 RESOURCE_NOT_FOUND` hoặc permission error không leak existence; không partial data | Server auth context + tenant-scoped PostgreSQL relationships are authoritative; investigate audit/security logs | unauthorized/cross-tenant attempt count, safe route/resource class, actor/tenant/request/trace, alert threshold |
+| Concurrent review decisions hoặc review vs document-set mutation | Sau auth/membership/role/tenant checks, lookup key/fingerprint trước mutable state/version guards. Same key/fingerprint replays original `201`; new keys dùng case/snapshot CAS và một transaction thắng | Exact replay nhận original `201` dù case đã terminal/version đổi; distinct request thua nhận `409 Conflict` | PostgreSQL atomically lưu key, canonical fingerprint, serialized response, `ReviewDecision`, case version và audit event; reload cho request mới | conflict, exact replay/key-mismatch count, actor/case/If-Match, decision latency, audit correlation |
+| Concurrent membership PATCH | Required membership `If-Match`; compare-and-set role/active/version + audit, không last-write-wins | Stale request nhận `409 MEMBERSHIP_VERSION_CONFLICT`; no partial role/status update | Committed PostgreSQL membership version và audit event; reload ETag before deliberate retry | membership CAS conflict, actor/target/version, denied role attempts, audit correlation |
+| Cross-tenant ID, parent-child mismatch, cursor/search/cache/citation/tool attempt | Không retry/fallback. Deny before read/model/write/signed URL; repeated attempts là security signal | Luôn `404 RESOURCE_NOT_FOUND`, không `401`/`403` dựa trên resource existence và không partial data | Server auth context + tenant-scoped PostgreSQL relationships are authoritative; investigate audit/security logs | unauthorized/cross-tenant attempt count, safe route/resource class, actor/tenant/request/trace, alert threshold |
 
 ## State behavior khi processing thất bại
 
@@ -64,9 +65,14 @@ required document type absent tạo `COMPLETENESS_DOCUMENT_SET` `ERROR`. Case v�
 `VALIDATION_REQUIRED`, không mắc kẹt mãi ở `PROCESSING` và không trở thành
 `REJECTED`.
 
-Upload replacement hoặc authorized reprocess invalidates active validation và
-affected result/index pointer, tạo run mới, tăng case version và đưa case về
-`PROCESSING`. Historical failed/successful run, issue và evidence vẫn audit-only.
+Mọi document-set mutation sau initial upload — additional new-slot upload,
+replacement hoặc authorized reprocess — atomically invalidates active validation
+và affected result/index pointers, tạo run/outbox cần thiết, tăng case version và
+đưa case về `PROCESSING`, kể cả khi state trước đã là `PROCESSING` hoặc pointer
+đang null. New-slot chỉ khi document type chưa có active document; replacement
+phải target exact active document cùng tenant/case/type. Unique slot invariant +
+case CAS ngăn hai active versions và wrong lineage. Historical failed/successful
+run, issue và evidence vẫn audit-only.
 
 ## Degraded-operation policy
 
@@ -118,8 +124,11 @@ document version; schema/provider fix may use an explicitly deployed
 If object durable but DB transaction failed, no `202 Accepted` was issued and a
 tenant-safe orphan cleanup removes it after retention. If DB/outbox committed,
 the document is acknowledged and must not be deleted merely because queue/index
-is absent. An uncertain response is resolved by idempotency-key lookup before
-client retry creates anything.
+is absent. An uncertain response is resolved by idempotency-key + canonical
+fingerprint lookup before mutable state/version guards; fingerprint gồm path,
+payload, exact `If-Match` và upload SHA-256 khi áp dụng. Review commit atomically
+stores decision/key/fingerprint/response, nên exact retry replays original `201`
+thay vì conflict với state/version do chính first execution tạo ra.
 
 ## Telemetry và alerts tối thiểu
 

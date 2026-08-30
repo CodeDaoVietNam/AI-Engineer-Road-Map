@@ -28,8 +28,15 @@ adapter và không được bỏ qua membership check.
 Mỗi action kiểm tra authenticated identity, active membership, permission,
 resource tenant và resource state/version server-side. Không tin `tenant_id`,
 role hoặc user identifier từ body/query/header/model/tool. Cross-tenant lookup
-trả not found đồng nhất để chống enumeration. Authorization xảy ra trước object
-read, signed URL, model/tool invocation, search hoặc queue publish.
+luôn trả `404 RESOURCE_NOT_FOUND` để chống enumeration. `401` chỉ áp dụng khi
+identity chưa xác thực; `403` chỉ áp dụng cho inactive membership/role denial
+không phụ thuộc resource existence. Authorization xảy ra trước object read,
+signed URL, model/tool invocation, search hoặc queue publish.
+
+Idempotent mutation vẫn chạy lại identity, membership, role và tenant-resource
+checks. Sau bốn checks này, same-key/fingerprint replay xảy ra trước mutable
+state/version guards và trả original stored response. Key/fingerprint mismatch
+fail closed; replay không bypass revoked membership hoặc cross-tenant denial.
 
 ## Tenant isolation theo lớp
 
@@ -41,6 +48,21 @@ read, signed URL, model/tool invocation, search hoặc queue publish.
   foreign key/unique constraint ngăn cross-tenant relationship khi khả thi.
 - Transaction compare-and-set bảo vệ case version, active document/result và
   validation snapshot; không dùng last-write-wins cho review/replacement.
+- Membership update yêu cầu membership `If-Match`; role/active change, version
+  increment và audit event dùng một compare-and-set transaction. Stale version
+  trả `MEMBERSHIP_VERSION_CONFLICT`.
+- Document slot có unique invariant tối đa một active version cho
+  `tenant_id + case_id + document_type`. New-slot chỉ khi slot trống;
+  replacement phải target exact active document cùng tenant/case/type. Case CAS
+  bảo vệ lineage và ngăn hai concurrent active versions.
+- Additional upload, replacement và reprocess atomically invalidate active
+  validation/affected result-index pointers, tăng case version và đưa case về
+  `PROCESSING` trước khi output mới có thể active.
+- Idempotency record lưu tenant/actor/route/key, canonical fingerprint (path,
+  payload, exact `If-Match`, upload SHA-256 khi áp dụng), business result và
+  serialized response. Review decision, state transition, audit và idempotency
+  record commit atomically để same-fingerprint retry replay original `201` sau
+  khi case state/version đã đổi.
 - Connection role có least privilege; migration/backup role tách runtime role.
   Database connection dùng TLS ngoài local-only network và credentials được
   rotate qua secret store.
@@ -58,7 +80,10 @@ read, signed URL, model/tool invocation, search hoặc queue publish.
   encryption at rest và TLS in transit là bắt buộc.
 - Browser chỉ nhận signed URL có TTL ngắn, verb/object cố định và không cho
   listing. Application re-authorize active membership, tenant, case/document
-  và state trước mỗi lần phát URL; URL không phải quyền lâu dài.
+  và state trước mỗi lần phát URL; URL không phải quyền lâu dài. Với
+  `bank_information_form`, viewer chỉ nhận redacted derivative hoặc
+  authorization-enforcing proxy; original bank object không bao giờ có
+  browser-facing signed URL và là internal-only.
 - Original versions immutable theo retention/audit policy. Orphan object sau DB
   failure được cleanup bằng job tenant-safe, không bằng broad prefix delete.
 
@@ -89,7 +114,8 @@ read, signed URL, model/tool invocation, search hoặc queue publish.
 - Search result được re-check ownership/active markers trước surface/citation.
   Query/cursor/cache entry bind tenant để không reuse cross-tenant.
 - Search index là rebuildable projection, không phải source of truth; stale
-  result bị loại ngay khi replacement/reprocess clear active pointer.
+  result bị loại ngay khi additional upload/replacement/reprocess clear active
+  pointer.
 
 ### Logs, metrics và traces
 
@@ -128,8 +154,12 @@ hoặc Agent context.
 
 API/UI/Agent/evidence hiển thị masked value (ví dụ chỉ bốn chữ số cuối). Raw
 evidence snippet và bounding region phải được redact/mask trước khi rời trusted
-processing boundary. Reviewer/Tenant Admin không mặc định nhận plaintext qua
-API; future unmask cần permission/step-up/audit contract riêng, ngoài MVP.
+processing boundary. Redacted bank PDF derivative/proxy cũng phải mask text,
+annotation, form field và embedded metadata liên quan; original PDF chỉ worker/
+recovery path nội bộ đọc được. Reviewer/Tenant Admin không mặc định nhận
+plaintext hoặc original qua API; future unmask cần explicit permission, step-up
+authentication, short-lived purpose-bound access và immutable audit event,
+ngoài MVP.
 
 ## Upload security
 
@@ -188,7 +218,8 @@ upload, extraction state đã commit và review API.
 ## URLs, browser và output safety
 
 - Signed URL dùng HTTPS, TTL ngắn, fixed object/method và response headers an
-  toàn; không log toàn URL hoặc đưa vào long-lived cache/audit payload.
+  toàn; không log toàn URL hoặc đưa vào long-lived cache/audit payload. Bank
+  document URL chỉ trỏ redacted derivative/proxy, never original object.
 - API đặt content disposition/type an toàn và browser hardening headers. PDF
   viewer không execute active content; snippet/field/chat output được escape.
 - Cursor, redirect và callback URL là allowlisted/signed; không open redirect
@@ -201,8 +232,8 @@ upload, extraction state đã commit và review API.
 
 Append-only, tenant-scoped `AuditEvent` bao phủ tối thiểu:
 
-- membership role/active-status change;
-- document upload, replacement, signed-access issuance và reprocess;
+- membership role/active-status CAS change cùng before/after version;
+- document new-slot upload, replacement, signed-access issuance và reprocess;
 - processing retry/dead-letter/replay/active-result selection;
 - validation snapshot activation/invalidation và state transition;
 - Reviewer/Tenant Admin `APPROVED`/`REJECTED` decision;
@@ -221,7 +252,7 @@ operations access là separate least-privilege path và cũng được audit.
   mismatch, list/count/search/cursor/cache, signed URL, queue message, Agent tool
   và citation paths.
 - Contract tests xác minh mọi endpoint chạy đủ năm authorization checks và
-  cross-tenant trả indistinguishable not found.
+  cross-tenant resource mismatch trả chính xác `404 RESOURCE_NOT_FOUND`.
 - Upload tests gồm MIME spoof, truncation, encrypted/corrupted PDF, oversized
   stream, page bomb, embedded active content và resource-budget exhaustion.
 - Prompt-injection/red-team fixtures xác minh tool allowlist, tenant filter,
