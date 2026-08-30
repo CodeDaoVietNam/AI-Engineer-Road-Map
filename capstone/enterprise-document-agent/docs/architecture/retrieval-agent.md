@@ -39,7 +39,10 @@ Metadata bắt buộc:
 - text dùng cho keyword index và vector embedding.
 
 Search index là projection có thể rebuild từ PDF gốc và PostgreSQL metadata;
-không là source of truth.
+không là source of truth. Hybrid retrieval trong core chỉ phụ thuộc
+`SearchIndex` port ở `packages/contracts`; composition root inject
+PostgreSQL/pgvector local adapter (hoặc Azure adapter về sau). Retrieval không
+kết nối trực tiếp PostgreSQL hay import driver/SDK.
 
 ## Hybrid retrieval
 
@@ -104,13 +107,16 @@ active successful extraction. Sensitive values như account number luôn masked.
 ### `list_validation_issues`
 
 Đọc issues theo active `ValidationRun`, severity và evidence; không đổi severity,
-resolve issue hoặc chuyển case.
+resolve issue hoặc chuyển case. Khi replacement/reprocess đã invalidate active
+snapshot và case ở `PROCESSING`, tool trả trạng thái validation pending, không
+trả snapshot cũ như kết quả hiện hành.
 
 ### `search_case_evidence`
 
 Thực hiện hybrid retrieval với mandatory filter
 `tenant_id + case_id + active document`; trả chunks/evidence có source metadata,
-không nhận tenant override từ model.
+không nhận tenant override từ model. Tool đi qua `SearchIndex` port, không bypass
+adapter bằng database query trực tiếp.
 
 ### `explain_validation_issue`
 
@@ -172,6 +178,12 @@ Backend, không phải LLM, xác minh citation:
 5. snippet thực sự thuộc page/chunk và không vượt redaction policy;
 6. bounding region, nếu có, thuộc cùng page/source block.
 
+Upload replacement hoặc reprocess atomically clear active validation/result
+pointers trước khi job mới chạy. Vì mandatory filter yêu cầu active document và
+active successful index result, chunks/citations từ version/run cũ bị loại ngay;
+historical evidence chỉ còn trong tenant-scoped audit view, không đi vào Agent
+context hiện hành.
+
 Citation invalid bị loại và toàn answer được đánh giá lại; không phát claim chỉ
 vì model đã tạo citation-looking text. Mục tiêu citation correctness ≥ **0,90**
 và answer faithfulness ≥ **0,90**.
@@ -205,3 +217,6 @@ refusal ≥ **0,85** và Agent tool-selection accuracy ≥ **0,90**.
   workflows là chủ sở hữu duy nhất của writes và state transitions.
 - Budget, allowlist, authorization, mandatory filter và citation validation đều
   ở server-side code; prompt không thể tắt các guardrails này.
+
+Local retrieval/Agent operation dùng local adapters và không yêu cầu Azure
+credentials hoặc Microsoft Foundry credentials.

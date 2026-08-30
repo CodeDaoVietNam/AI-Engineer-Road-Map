@@ -171,50 +171,66 @@ lập.
 
 ## Rule catalog MVP
 
-Mỗi rule có stable `rule_id`, version, document types, input fields, deterministic
-predicate, severity, message template và evidence policy.
+Mỗi issue-producing rule có stable `rule_id`, version, document types, input
+fields, deterministic predicate, **một severity cố định**, message template và
+evidence policy. Gate rule chỉ điều phối input/scheduling, không tạo
+`ValidationIssue`, nên severity là “không áp dụng”; gate failure không được giả
+làm business issue.
 
 ### Completeness và required fields
 
-- `COMPLETENESS_DOCUMENT_SET`: đủ đúng năm active document type; `ERROR` khi
-  thiếu.
+- `COMPLETENESS_DOCUMENT_SET`: `ERROR` cho mỗi required document type không có
+  active document trong snapshot.
+- `PROCESSING_RESULT_UNAVAILABLE`: `ERROR` khi active document đã terminal nhưng
+  không có active successful `ProcessingRun`, gồm technical `FAILED`.
 - `REQUIRED_FIELD_MISSING`: required field không có value/evidence; `ERROR` cho
   critical/required MVP fields.
 
 ### Format
 
-- `FORMAT_REGISTRATION_NUMBER`: registration number không đạt versioned format;
-  severity theo schema nhưng critical mismatch không được bỏ qua.
+- `FORMAT_REGISTRATION_NUMBER`: `ERROR` khi registration number không đạt
+  versioned format.
 - `FORMAT_TAX_ID`: tax ID không đạt format; `ERROR`.
-- `FORMAT_BANK`: currency/SWIFT-BIC/account-number shape không hợp lệ; không log
-  account number.
-- `FORMAT_DATE_OR_MONEY`: date/currency/decimal ambiguous hoặc invalid.
+- `FORMAT_BANK_REQUIRED`: `ERROR` khi account number hoặc required currency
+  shape không hợp lệ; không log account number.
+- `FORMAT_BANK_OPTIONAL`: `WARNING` khi optional SWIFT-BIC/bank field có value
+  nhưng sai format.
+- `FORMAT_REQUIRED_DATE_OR_MONEY`: `ERROR` khi required date/currency/decimal
+  ambiguous hoặc invalid.
+- `FORMAT_OPTIONAL_DATE_OR_MONEY`: `WARNING` khi optional value có mặt nhưng
+  ambiguous hoặc invalid.
 
 ### Cross-document consistency
 
-- `CONSISTENCY_LEGAL_NAME`: đối chiếu normalized legal name giữa profile,
-  registrations, bank account holder và quotation supplier; mismatch có
+- `CONSISTENCY_LEGAL_NAME`: `ERROR` khi normalized legal name giữa profile,
+  registrations, bank account holder và quotation supplier mismatch; issue có
   evidence từ cả hai phía.
-- `CONSISTENCY_ADDRESS`: phát hiện khác biệt địa chỉ cần reviewer xem.
+- `CONSISTENCY_ADDRESS`: `WARNING` cho khác biệt địa chỉ cần reviewer xem.
 - `CONSISTENCY_IDENTIFIER_DUPLICATE`: tax/registration identifier trùng hoặc
-  xung đột trong tenant-scoped dataset theo policy.
+  xung đột trong tenant-scoped dataset theo policy; `ERROR`.
 
 ### Quotation validity và calculation
 
 - `QUOTATION_VALIDITY`: quotation hết hạn/không suy ra được validity tại thời
-  điểm validation; dùng explicit evaluation date trong `ValidationRun`.
+  điểm validation; `ERROR`, dùng explicit evaluation date trong
+  `ValidationRun`.
 - `QUOTATION_LINE_CALCULATION`: kiểm tra quantity × unit price, tax/discount và
-  rounding theo currency policy.
+  rounding theo currency policy; mismatch là `ERROR`.
 - `QUOTATION_TOTAL_CALCULATION`: đối chiếu line totals/subtotal/tax/discount với
-  `quotation_total` trong configured tolerance.
+  `quotation_total` trong configured tolerance; mismatch là `ERROR`.
 
 ### Confidence, duplicate và version
 
-- `CONFIDENCE_CRITICAL_LOW` và `CONFIDENCE_FIELD_LOW` áp thresholds đã pin.
+- `CONFIDENCE_CRITICAL_LOW`: `ERROR`; `CONFIDENCE_FIELD_LOW`: `WARNING`;
+  `CONFIDENCE_OPTIONAL_LOW`: `INFO` cho optional low-confidence note.
 - `DUPLICATE_DOCUMENT_HASH`: SHA-256 trùng trong cùng tenant/case và document
-  lifecycle cần được chỉ rõ, không tự xóa version.
-- `ACTIVE_DOCUMENT_VERSION`: rule chỉ dùng active document version và active
-  successful `ProcessingRun`; stale output không tham gia quyết định.
+  lifecycle tạo `WARNING`, không tự xóa version.
+- `DOCUMENT_SET_SETTLED`: gate/non-issue rule, chỉ cho chạy validation khi mọi
+  active document hiện đã upload có current processing-lineage leaf ở terminal
+  technical status; severity không áp dụng, historical `RETRY_PENDING` parents
+  không chặn và gate không đòi đủ năm document types.
+- `ACTIVE_DOCUMENT_VERSION`: gate/non-issue rule, chỉ chọn active document
+  version/result; stale output không tham gia và severity không áp dụng.
 
 Rule catalog bao phủ completeness, required fields, format, cross-document
 consistency, quotation validity/calculation, confidence và duplicate/version.
@@ -222,7 +238,7 @@ Deterministic tests phải đạt **100%** expected cases.
 
 ## Evidence contract
 
-`Evidence` là immutable lineage record, tối thiểu gồm:
+`Evidence` là immutable lineage record độc lập, tối thiểu gồm:
 
 - `evidence_id`, `tenant_id`, `case_id`, `document_id`, document type và version;
 - `processing_run_id`, parser/schema/pipeline versions;
@@ -232,10 +248,13 @@ Deterministic tests phải đạt **100%** expected cases.
   coordinate system/unit rõ ràng;
 - source block/chunk identifier và content hash để phát hiện stale citation.
 
-Mỗi `ExtractedField` liên kết một hoặc nhiều evidence records. Mỗi
-`ValidationIssue` liên kết evidence cho mọi operand cần đối chiếu; issue “missing”
-liên kết document/page/section đã kiểm tra và machine-readable missing reason
-thay vì tạo snippet giả.
+Quan hệ là optional many-to-many qua `FieldEvidenceReference` và
+`IssueEvidenceReference`; không dùng hai foreign keys bắt buộc trên `Evidence`.
+Một `ExtractedField` biểu diễn absence có thể không có reference; field có
+non-null extracted value chỉ được surface khi có ít nhất một reference hợp lệ.
+`ValidationIssue` cross-document liên kết evidence cho operands có nguồn, còn
+issue thiếu cả document type có thể có zero evidence và lưu machine-readable
+missing scope/reason thay vì tạo snippet giả.
 
 Backend chỉ phát evidence/citation khi record tồn tại, thuộc đúng tenant/case,
 trỏ active document, page/chunk khớp và snippet thuộc nguồn đã hash. Bank account
@@ -244,12 +263,20 @@ trace, fixture hoặc generated report.
 
 ## Kết quả và chuyển state
 
-Mỗi `ValidationRun` pin active document versions, active successful processing
-runs, rule-catalog version, confidence configuration và evaluation timestamp.
-Run tạo `ValidationIssue`/evidence atomically. Deterministic workflow:
+Mỗi `ValidationRun` pin active document versions, terminal processing outcomes,
+active successful runs, rule-catalog version, confidence configuration và
+evaluation timestamp. Run tạo `ValidationIssue`/evidence references atomically.
+Validation bắt đầu khi tất cả active documents **hiện đã upload** có current
+processing-lineage leaf đạt `SUCCEEDED` hoặc `FAILED`; nó không chờ đủ năm loại.
+Deterministic workflow:
 
-- giữ case ở `VALIDATION_REQUIRED` khi còn `ERROR` hoặc input chưa đủ;
+- tạo `COMPLETENESS_DOCUMENT_SET` `ERROR` cho absent required types và
+  `PROCESSING_RESULT_UNAVAILABLE` `ERROR` cho uploaded documents không có
+  successful result;
+- giữ case ở `VALIDATION_REQUIRED` khi còn `ERROR`;
 - cho phép chuyển `READY_FOR_REVIEW` khi không còn `ERROR` và required validation
   đã hoàn tất;
+- khi upload/replacement/reprocess tiếp theo hoàn tất, tạo `ValidationRun` mới
+  trên snapshot mới; snapshot/issues trước chỉ còn audit history;
 - không để extraction model, LLM hoặc Agent tự chuyển state;
 - không biến schema/parser/model technical failure thành `REJECTED`.

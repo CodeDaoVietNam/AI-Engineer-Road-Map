@@ -56,7 +56,9 @@ flowchart TD
     subgraph SharedPackages[Shared packages]
         CORE[packages/core<br/>domain + application use cases]
         CONTRACTS[packages/contracts<br/>schemas + events + ports]
+        SEARCH_PORT[SearchIndex port<br/>packages/contracts]
         ADAPTERS[packages/adapters<br/>local/Azure implementations]
+        SEARCH_ADAPTER[PostgreSQL/pgvector SearchIndex adapter<br/>packages/adapters]
     end
 
     subgraph Infrastructure
@@ -69,6 +71,9 @@ flowchart TD
 
     B --> WEB --> API
     API --> AGENT --> RET
+    RET --> SEARCH_PORT
+    SEARCH_ADAPTER -. implements .-> SEARCH_PORT
+    API -. composition injects .-> SEARCH_ADAPTER
     API --> CORE
     WORKER --> CORE
     WORKER --> RULES
@@ -79,8 +84,8 @@ flowchart TD
     ADAPTERS --> PG
     ADAPTERS --> OBJ
     ADAPTERS --> MODELS
+    SEARCH_ADAPTER --> PG
     API --> OUTBOX --> MQ --> WORKER
-    RET --> PG
 ```
 
 ## Trách nhiệm thành phần
@@ -97,10 +102,15 @@ flowchart TD
 - Xác thực identity, active membership, role, resource ownership và state.
 - Điều phối supplier/case, upload acknowledgement, status/evidence, chat,
   review decision và audit APIs.
-- Tạo `Document` cùng `DocumentUploaded` trong transactional outbox, rồi trả
-  `202 Accepted` sau khi durable commit thành công.
+- Trong cùng upload database transaction, tạo `Document`, initial
+  `ProcessingRun` ở `QUEUED` và `DocumentUploaded` trong transactional outbox;
+  event mang `run_id`. API chỉ trả `202 Accepted` sau durable commit.
 - Chứa hybrid retrieval, read-only Agent và citation validator. Agent failure
   không được ảnh hưởng upload, extraction hoặc review.
+- Nhận replacement/reprocess ở các nonterminal case states, invalidate active
+  validation snapshot cùng affected document result/index pointer và đưa case
+  về `PROCESSING` bằng optimistic locking; terminal `APPROVED`/`REJECTED` từ
+  chối thay đổi tài liệu.
 
 ### `worker`
 
@@ -157,6 +167,10 @@ Service Bus, Document Intelligence, AI Search, Entra ID và Microsoft
 Foundry/Azure OpenAI sau khi local MVP có evaluation baseline; business logic
 không import Azure SDK.
 
+Chạy local không yêu cầu Azure credentials hoặc Microsoft Foundry credentials.
+Mọi local model provider dùng adapter/configuration riêng; Azure/Foundry chỉ là
+deployment option sau local baseline, không nằm trên local startup path.
+
 ## Quy tắc phụ thuộc và dữ liệu
 
 ```text
@@ -181,12 +195,16 @@ infrastructure -> không được core gọi trực tiếp
 
 ## Luồng dữ liệu cấp cao
 
-1. API xác minh authorization và case state, validate PDF, hoàn tất object write,
-   tạo `Document` cùng outbox event trong một database transaction và trả `202`.
-2. Outbox publisher đưa identifiers lên RabbitMQ; worker xử lý theo checkpoints,
-   lưu fields/evidence/issues/chunks và technical status.
-3. Deterministic workflow đánh giá điều kiện để chuyển business state; lỗi kỹ
-   thuật không trở thành `REJECTED`.
+1. API xác minh authorization/case state, validate PDF, hoàn tất object write,
+   rồi tạo `Document`, initial `ProcessingRun(QUEUED)` và outbox event có
+   `run_id` trong một database transaction trước khi trả `202`.
+2. Outbox publisher chỉ dispatch `run_id`/verified identifiers lên RabbitMQ một
+   cách idempotent; worker xử lý run đã có theo checkpoints và lưu outputs.
+3. Khi tất cả active documents hiện đã upload đạt terminal processing status,
+   deterministic workflow tạo `ValidationRun` kể cả bộ tài liệu còn thiếu;
+   absent required types tạo `ERROR`. Upload/replacement/reprocess tiếp theo
+   invalidate active validation snapshot và tạo vòng processing/validation mới.
+   Lỗi kỹ thuật không trở thành `REJECTED`.
 4. Reviewer dùng API để xem dữ liệu. Hybrid retrieval luôn filter
    `tenant_id + case_id + active document`; Agent chỉ đọc tool results và backend
    chỉ phát answer có citations hợp lệ.

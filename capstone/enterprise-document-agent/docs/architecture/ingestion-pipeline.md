@@ -7,8 +7,8 @@ khi trả response và xử lý nền an toàn dưới at-least-once delivery. C
 
 - mỗi file tối đa **20 MB** và **50 pages**;
 - API không acknowledge nếu object chưa durable hoặc database/outbox chưa commit;
-- `Document` và `DocumentUploaded` outbox event được tạo trong cùng database
-  transaction;
+- `Document`, initial `ProcessingRun` ở `QUEUED` và `DocumentUploaded` outbox
+  event được tạo trong cùng database transaction;
 - message chỉ chứa verified identifiers, không chứa PDF binary;
 - worker idempotent theo `document_id + pipeline_version`;
 - redelivery/retry không tạo extracted field, evidence hoặc chunk trùng;
@@ -33,7 +33,7 @@ sequenceDiagram
     API->>OS: Stream to server-generated object key + SHA-256
     OS-->>API: Durability confirmation
     API->>DB: BEGIN
-    API->>DB: Insert Document + DocumentUploaded outbox event
+    API->>DB: Insert Document + ProcessingRun(QUEUED) + DocumentUploaded(run_id)
     API->>DB: COMMIT
     DB-->>API: Durable commit
     API-->>U: 202 Accepted {document_id, status_url}
@@ -50,7 +50,10 @@ API thực hiện theo thứ tự fail-fast:
 1. Xác minh token, authenticated user và active membership; dẫn xuất
    `tenant_id`, role và user từ server-side context.
 2. Kiểm tra supplier/case/document thuộc cùng tenant, role được upload và case
-   state cho phép nhận hoặc thay document.
+   state cho phép mutation. Initial upload được nhận ở `DRAFT`; additional
+   upload/replacement được nhận ở `DOCUMENTS_UPLOADED`, `PROCESSING`,
+   `VALIDATION_REQUIRED` và `READY_FOR_REVIEW`. Reprocess dùng cùng nonterminal
+   set nhưng yêu cầu active document; `APPROVED`/`REJECTED` bị từ chối.
 3. Chỉ chấp nhận `company_profile`, `business_registration`, `tax_registration`,
    `bank_information_form` hoặc `quotation`.
 4. Giới hạn stream ở 20 MB; kiểm tra PDF signature/content thay vì tin MIME hay
@@ -63,9 +66,13 @@ API thực hiện theo thứ tự fail-fast:
 
 API stream một lượt có giới hạn, đồng thời tính SHA-256. Chỉ sau durability
 confirmation của object storage mới mở/hoàn tất database transaction tạo
-`Document` và outbox row. Nếu object write lỗi, không tạo record. Nếu database
-transaction lỗi sau object write, API không trả `202`; orphan object không được
-tham chiếu và được một cleanup job tenant-safe loại bỏ sau retention window.
+`Document`, initial `ProcessingRun(QUEUED)` và outbox row có cùng `run_id`. Với
+replacement, transaction cũng tăng case optimistic-lock version, chuyển active
+document version, clear active validation cùng affected result/index pointers
+và đưa nonterminal case về `PROCESSING`. Nếu object write lỗi, không tạo record.
+Nếu database transaction lỗi sau object write, API không trả `202`; orphan
+object không được tham chiếu và được một cleanup job tenant-safe loại bỏ sau
+retention window.
 
 Response `202 Accepted` chỉ gồm `document_id` và `status_url` cần để polling;
 không hứa processing đã hoàn tất. P95 acknowledgement dưới **500 ms** được đo từ
@@ -75,9 +82,9 @@ finalization, SHA-256, database/outbox commit và response generation.
 ## Transactional outbox và RabbitMQ
 
 `DocumentUploaded` dùng PascalCase và chứa tối thiểu `event_id`, `tenant_id`,
-`case_id`, `document_id`, `document_version`, `pipeline_version`, object
-identifier và trace identifiers đã được API xác minh. Event không chứa PDF
-binary, full document text hoặc bank-account value.
+`case_id`, `document_id`, `document_version`, `run_id`, `pipeline_version`,
+object identifier và trace identifiers đã được API xác minh. Event không chứa
+PDF binary, full document text hoặc bank-account value.
 
 Outbox publisher:
 
@@ -86,6 +93,11 @@ Outbox publisher:
 3. chỉ đánh dấu published sau confirm;
 4. retry publish khi chưa có confirm; duplicate publish vẫn an toàn vì consumer
    idempotent.
+
+API là owner duy nhất của initial `ProcessingRun`: upload transaction tạo run ở
+`QUEUED`. Outbox publisher/dispatcher chỉ publish `run_id` đã tồn tại, không tạo
+run. Idempotent dispatch keyed by `event_id + run_id` khiến publisher retry
+không nhân bản run hoặc job identity.
 
 PostgreSQL outbox là source of truth cho event chưa phát. RabbitMQ dùng durable
 queue và at-least-once delivery nhưng không phải source of truth hoặc recovery
@@ -105,6 +117,10 @@ có `run_id` riêng để audit từng retry/reprocess, nhưng mọi write kết
 delivery của cùng job không tạo run/output mới; một explicit retry hoặc
 reprocess tạo `ProcessingRun` riêng, liên kết run trước, rồi tái sử dụng kết quả
 checkpoint hợp lệ hoặc ghi version kết quả mới có lineage.
+
+Initial run do API upload transaction tạo. Explicit reprocess cũng do API use
+case tạo sau authorization; scheduler tạo child `ProcessingRun` cho transient
+retry. Worker chỉ claim/update run đã tồn tại và không tự tạo initial run.
 
 ```mermaid
 flowchart LR
@@ -169,6 +185,54 @@ lineage, không chứa nội dung nhạy cảm.
 - Dead-letter không đổi case thành `REJECTED`. UI hiển thị technical `FAILED`
   và hướng xử lý/reprocess riêng.
 
+## Replacement, reprocess và validation trigger
+
+Replacement tạo `Document` version mới; reprocess giữ nguyên `Document` nhưng
+tạo `ProcessingRun` mới. Initial upload được phép ở `DRAFT`; additional
+upload/replacement/reprocess được phép ở `DOCUMENTS_UPLOADED`, `PROCESSING`,
+`VALIDATION_REQUIRED` và `READY_FOR_REVIEW`, với reprocess yêu cầu active
+document. `APPROVED`/`REJECTED` từ chối request; muốn thay đổi terminal case cần
+một future reopen contract, không bypass bằng upload API.
+
+Trong cùng transaction nhận replacement/reprocess, API:
+
+1. kiểm tra active membership, role, tenant ownership, case state và optimistic
+   lock version;
+2. với replacement, atomically chuyển active document version; với reprocess,
+   giữ active document;
+3. clear active `ValidationRun` pointer và affected document active
+   processing/index result pointers, nhưng giữ mọi record cũ cho audit;
+4. tăng case version, đưa case về `PROCESSING` và tạo run/outbox tương ứng.
+
+Reprocess trong `PROCESSING` chỉ được nhận khi active document không có run
+`QUEUED`, `RUNNING` hoặc `RETRY_PENDING`; nếu có, API trả conflict thay vì tạo
+hai run cạnh tranh trong cùng idempotency scope. Replacement có thể supersede
+run của version cũ vì active-version guard ngăn output cũ trở lại active.
+
+Vì case version và active validation pointer thay đổi atomically, review command
+đồng thời trên `READY_FOR_REVIEW` trả `409` hoặc
+`CASE_NOT_READY_FOR_REVIEW`; nó không thể quyết định trên stale evidence. Run
+đang chạy của document version cũ có thể hoàn tất cho audit nhưng không được
+chọn active hoặc kích hoạt validation mới.
+
+Validation không chờ đủ năm document types. Workflow tạo `ValidationRun` khi
+**tất cả active documents hiện đã upload** có current processing-lineage leaf ở
+terminal status `SUCCEEDED` hoặc `FAILED`. Historical parent runs có
+`RETRY_PENDING` không chặn gate sau khi child retry đã trở thành current leaf.
+Snapshot pin terminal leaves và successful results; `FAILED`/không có active
+successful result tạo deterministic `ERROR`, và mỗi absent required document
+type cũng tạo `COMPLETENESS_DOCUMENT_SET` `ERROR`. Case vì vậy đi từ
+`PROCESSING` sang `VALIDATION_REQUIRED` thay vì bị stranded.
+
+Commit `ValidationRun` dùng compare-and-set trên case version và exact active
+document/result set. Upload/replacement/reprocess đồng thời làm validation commit
+thất bại và chạy lại trên snapshot mới; stale snapshot không thể thành active.
+
+Khi một document còn thiếu được upload hoặc document lỗi được reprocess,
+snapshot cũ bị invalidate, case về `PROCESSING`, rồi workflow tạo `ValidationRun`
+mới sau khi tập active đã upload lại đạt terminal statuses. Mỗi vòng giữ lineage;
+không mutate issue/snapshot cũ.
+
 ## Processing status và business state
 
 Processing status độc lập với case business state:
@@ -179,11 +243,13 @@ QUEUED → RUNNING → SUCCEEDED
                  └→ FAILED
 ```
 
-Upload hợp lệ có thể đưa case từ `DRAFT` sang `DOCUMENTS_UPLOADED`; deterministic
-workflow đưa case sang `PROCESSING` khi ingestion bắt đầu. Chỉ validation
-workflow mới đánh giá `VALIDATION_REQUIRED` và `READY_FOR_REVIEW`. Lỗi kỹ thuật
-giữ business case có thể quan sát/recover, không bao giờ được ánh xạ thành
-`REJECTED`.
+Upload hợp lệ đưa `DRAFT` sang `DOCUMENTS_UPLOADED`; initial run/outbox đã được
+tạo atomically. Deterministic workflow đưa case sang `PROCESSING`. Sau khi mọi
+active document đã upload đạt terminal processing status, validation workflow
+đưa case sang `VALIDATION_REQUIRED` dù bộ năm loại còn thiếu; chỉ snapshot không
+có `ERROR` mới sang `READY_FOR_REVIEW`. Replacement/reprocess hợp lệ từ
+`VALIDATION_REQUIRED` hoặc `READY_FOR_REVIEW` invalidate snapshot và quay về
+`PROCESSING`. Lỗi kỹ thuật không bao giờ được ánh xạ thành `REJECTED`.
 
 ## Telemetry và mục tiêu vận hành
 
