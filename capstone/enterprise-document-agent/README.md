@@ -28,6 +28,7 @@ The product has three user roles:
   permissions.
 
 AI may classify documents, extract fields, find evidence, and raise alerts.
+Deterministic workflows are the sole owners of writes and state transitions.
 The deterministic rule engine owns pass/fail evaluation. Only a Reviewer or
 Tenant Admin can approve or reject a case; the agent is read-only and cannot
 change case data or state.

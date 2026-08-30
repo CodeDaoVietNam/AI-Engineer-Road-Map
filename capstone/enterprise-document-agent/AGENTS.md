@@ -43,7 +43,9 @@ Every business record, object path, queue message, search query, cache key,
 log context, and agent tool call must be scoped by the authenticated tenant.
 Never accept `tenant_id` from a request body as an authorization source; derive
 it from authenticated membership and verify resource ownership. Agent tools are
-read-only. Only a Reviewer or Tenant Admin may approve or reject a case.
+read-only.
+Deterministic workflows are the sole owners of writes and state transitions.
+Only a Reviewer or Tenant Admin may approve or reject a case.
 
 ## Secrets and local configuration
 
