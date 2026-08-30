@@ -192,7 +192,7 @@ ID là ổn định để milestone, test và API contract tham chiếu. Mỗi r
 - **Actor:** Reviewer hoặc Tenant Admin.
 - **Hành vi:** Approve/reject case bằng idempotency key và optimistic locking.
 - **Ranh giới quyền:** Chỉ role review, đúng tenant, case `READY_FOR_REVIEW` không có `ERROR` được quyết định.
-- **Kết quả quan sát được:** Case chuyển `APPROVED`/`REJECTED`; conflict trả `409` và không ghi đè decision khác.
+- **Kết quả quan sát được:** Case chuyển `APPROVED`/`REJECTED`; concurrent conflict trả `409` và không ghi đè decision khác. Nếu case chưa ở `READY_FOR_REVIEW` hoặc còn `ERROR`, server từ chối với `CASE_NOT_READY_FOR_REVIEW`.
 
 ## AUD — Audit
 

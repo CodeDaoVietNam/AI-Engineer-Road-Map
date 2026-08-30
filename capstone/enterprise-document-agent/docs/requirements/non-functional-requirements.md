@@ -8,11 +8,11 @@ Các target là design target MVP. P95 được đo ở server với workload đ
 
 ### PERF-001 — Upload acknowledgement
 
-API phải trả upload acknowledgement P95 dưới **500 ms** sau khi PDF hợp lệ được durable-acknowledged, kèm `202 Accepted`, `document_id` và `status_url`; không tính thời gian truyền file.
+API phải trả upload acknowledgement P95 dưới **500 ms**, đo từ khi server nhận byte cuối của PDF đến khi server hoàn tất tạo response `202 Accepted` với `document_id` và `status_url`. Khoảng thời gian client truyền các byte PDF đến server bị loại trừ; timer vẫn bao gồm server validation, object-storage finalization/durability confirmation, SHA-256, database và outbox commit, cùng việc tạo response.
 
 ### PERF-002 — Document processing
 
-Document processing P95 phải dưới **hai phút**, tính từ job được queue đến `SUCCEEDED` hoặc terminal technical failure có thể quan sát.
+Document processing P95 thành công phải dưới **hai phút**, tính từ khi `DocumentUploaded` được published cho đến khi `ProcessingRun` đạt `SUCCEEDED`. SLI này chỉ dùng successful runs; retry và terminal technical failure không được đưa vào mẫu để failure nhanh không cải thiện success latency.
 
 ### PERF-003 — Retrieval và chat
 
@@ -22,11 +22,15 @@ Retrieval P95 phải dưới **một giây**. Chat không streaming P95 phải d
 
 Thiết kế phải chịu 10 tenants, 100 users mỗi tenant, 1.000 cases mỗi tenant, trung bình năm documents mỗi case, khoảng 1.000 uploads/ngày, peak 20 uploads/phút và 50 chat requests đồng thời mà không bỏ tenant boundary hoặc hạ latency class.
 
+### PERF-005 — Failure-detection latency
+
+Latency phát hiện failure phải được đo và báo cáo riêng, tính từ `DocumentUploaded` được published đến `FAILED` hoặc dead-letter queue. Metric này không có quyền thay thế hoặc làm thay đổi PERF-002; report phải tách count/retry class của successful và failed runs.
+
 ## AVAIL — Availability
 
 ### AVAIL-001 — Availability target
 
-Availability target cho luồng API được công bố là **99,5%**. Dependency không khả dụng phải trả error code ổn định, không báo sai processing/review thành công.
+Availability target là **99,5%** trong mỗi rolling 30-day window cho các API flows được công bố: auth/me; suppliers; supplier cases; document upload acknowledgement, status, evidence và reprocess; extracted fields; validation issues; case chat; review decisions; audit events. SLI bằng số request hợp lệ hoàn thành trước gateway timeout với response nghiệp vụ hợp lệ (bao gồm intended authorization/business `4xx` và `409`) chia cho tổng request hợp lệ của các flows đó; `5xx` và timeout là unavailable. Planned maintenance và dependency failure vẫn được tính vào denominator và là unavailable khi gây `5xx`/timeout; chúng chỉ được ghi chú riêng, không bị loại khỏi SLI. Dependency không khả dụng phải trả error code ổn định, không báo sai processing/review thành công.
 
 ### AVAIL-002 — Failure isolation
 

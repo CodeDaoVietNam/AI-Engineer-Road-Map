@@ -41,6 +41,7 @@ AI chỉ được classify, extract, retrieve evidence và tạo cảnh báo. De
 - Upload/versioning PDF, reliable ingestion, extraction, evidence và deterministic cross-document validation.
 - Hybrid retrieval, grounded chat và citation được backend xác minh.
 - Human review, audit, evaluation dataset synthetic và observability nền tảng.
+- Quy mô demo/acceptance độc lập với capacity: một tenant, 3–5 users, 20 suppliers và khoảng 100 PDF synthetic.
 - Quy mô thiết kế: 10 tenants, 100 users mỗi tenant, 1.000 cases mỗi tenant, trung bình năm documents mỗi case, khoảng 1.000 uploads/ngày, peak 20 uploads/phút và 50 chat requests đồng thời.
 
 ## Ngoài phạm vi MVP
