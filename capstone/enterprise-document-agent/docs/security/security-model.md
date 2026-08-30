@@ -99,8 +99,10 @@ fail closed; replay không bypass revoked membership hoặc cross-tenant denial.
   và durable queue. Producer/consumer không nhận routing key từ PDF/client.
 - Worker đối chiếu toàn relationship với database trước object read/write; chữ
   ký/format message không thay tenant authorization/invariant check.
-- At-least-once delivery được chặn duplicate theo
-  `document_id + pipeline_version`, run/checkpoint và unique/upsert constraints.
+- At-least-once delivery được chặn duplicate theo `run_id + checkpoint/stage`
+  (và `message_id` khi cần) cùng unique/upsert constraints. `document_id +
+  pipeline_version` chỉ là lineage/active-result comparison invariant; API
+  idempotency và run generation vẫn cho phép reprocess mới đã được chấp nhận.
   Dead-letter payload vẫn redacted và tenant-scoped; replay chỉ qua authorized
   reprocess/operational runbook.
 

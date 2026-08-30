@@ -114,8 +114,9 @@ flowchart TD
 
 ### `worker`
 
-- Nhận message at-least-once, xử lý idempotent theo
-  `document_id + pipeline_version` và duy trì checkpoints.
+- Nhận message at-least-once, dedupe theo `run_id + checkpoint/stage` và duy
+  trì checkpoints; `document_id + pipeline_version` chỉ phục vụ lineage và
+  active-result comparison.
 - Parse/OCR, classify, extract, normalize, gọi deterministic validation, chunk
   và index active document.
 - Phân loại transient/permanent failure, retry có giới hạn và chuyển dead-letter

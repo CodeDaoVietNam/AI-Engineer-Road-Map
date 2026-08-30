@@ -99,8 +99,12 @@ Write thành công lưu idempotency key, fingerprint, business record/result và
 serialized response atomically trong cùng transaction. Vì vậy retry review cùng
 key/fingerprint trả lại original `201` kể cả decision đầu đã đổi case thành
 `APPROVED`/`REJECTED` và case version hiện tại không còn khớp `If-Match`. Chỉ
-request mới đi tiếp tới mutable state/version guards. Key không thay worker
-idempotency `document_id + pipeline_version`.
+request mới đi tiếp tới mutable state/version guards. API idempotency chỉ chống
+lặp cùng một user intent, không thay worker delivery dedupe: mỗi reprocess mới
+được chấp nhận tạo `run_id` và `reprocess_generation` riêng, kể cả cùng
+`document_id` và `pipeline_version`; replay cùng key/fingerprint trả response
+đã lưu. `document_id + pipeline_version` chỉ dùng cho lineage, active-result
+comparison và invariant, không suppress reprocess mới.
 
 Case responses trả `ETag: "case-v12"`. Mutation document/reprocess/review mang
 `If-Match: "case-v12"`; thiếu precondition trả `428 PRECONDITION_REQUIRED`, stale

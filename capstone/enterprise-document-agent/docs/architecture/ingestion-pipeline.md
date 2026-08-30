@@ -10,7 +10,9 @@ khi trả response và xử lý nền an toàn dưới at-least-once delivery. C
 - `Document`, initial `ProcessingRun` ở `QUEUED` và `DocumentUploaded` outbox
   event được tạo trong cùng database transaction;
 - message chỉ chứa verified identifiers, không chứa PDF binary;
-- worker idempotent theo `document_id + pipeline_version`;
+- worker dedupe delivery theo `run_id + checkpoint/stage` (và `message_id` khi
+  cần); `document_id + pipeline_version` chỉ là lineage/active-result
+  comparison invariant;
 - redelivery/retry không tạo extracted field, evidence hoặc chunk trùng;
 - technical failure chỉ đổi processing status, không tự đổi business state thành
   `REJECTED`.
@@ -111,12 +113,12 @@ trước khi đọc object hoặc ghi kết quả.
 
 ## Idempotency, run và checkpoint
 
-Khóa idempotency logic là **`document_id + pipeline_version`**. `ProcessingRun`
-có `run_id` riêng để audit từng retry/reprocess, nhưng mọi write kết quả phải
-được bảo vệ trong scope của khóa logic này và stage hiện hành. Duplicate
-delivery của cùng job không tạo run/output mới; một explicit retry hoặc
-reprocess tạo `ProcessingRun` riêng, liên kết run trước, rồi tái sử dụng kết quả
-checkpoint hợp lệ hoặc ghi version kết quả mới có lineage.
+Có hai lớp idempotency. API `Idempotency-Key` + request fingerprint chống lặp
+cùng một user intent; mỗi reprocess mới được chấp nhận tạo `run_id` và
+`reprocess_generation` riêng. Worker dedupe delivery theo `run_id +
+checkpoint/stage` (và `message_id` khi cần), nên duplicate broker delivery của
+cùng job không tạo output trùng. `document_id + pipeline_version` chỉ dùng cho
+lineage, active-result comparison và invariant; nó không suppress reprocess mới.
 
 Initial run do API upload transaction tạo. Explicit reprocess cũng do API use
 case tạo sau authorization; scheduler tạo child `ProcessingRun` cho transient
@@ -141,8 +143,9 @@ checkpoint/kết quả cần thiết đã commit. Khi message bị redeliver:
 - nếu checkpoint trung gian hợp lệ, worker tiếp tục từ stage kế tiếp;
 - nếu output không khớp schema/pipeline version hiện hành, worker không dùng nó
   như checkpoint hợp lệ;
-- unique/upsert constraints trong idempotency scope ngăn duplicate field,
-  evidence và chunk.
+- unique/upsert constraints trong scope `run_id + checkpoint/stage` ngăn
+  duplicate field, evidence và chunk; records vẫn mang `document_id +
+  pipeline_version` để đối chiếu lineage.
 
 Mỗi retry/reprocess có `ProcessingRun` riêng cho audit; chỉ một run
 `SUCCEEDED` được chọn làm active result. Việc chọn active chỉ xảy ra atomically
@@ -158,7 +161,8 @@ và lỗi kết nối tạm thời. Workflow:
 1. lưu error code an toàn và đánh dấu run `RETRY_PENDING`;
 2. tính exponential backoff + jitter từ retry count trong server-controlled
    policy;
-3. phát job retry có cùng idempotency scope, tenant context và checkpoint;
+3. phát job retry với run/checkpoint identity phù hợp, tenant context và
+   checkpoint;
 4. tạo lineage `ProcessingRun` cho lần retry nhưng không nhân bản output.
 
 Retry budget là ba lần retry sau lần chạy đầu; không adapter nào được tự tạo
@@ -206,8 +210,10 @@ Trong cùng transaction nhận replacement/reprocess, API:
 
 Reprocess trong `PROCESSING` chỉ được nhận khi active document không có run
 `QUEUED`, `RUNNING` hoặc `RETRY_PENDING`; nếu có, API trả conflict thay vì tạo
-hai run cạnh tranh trong cùng idempotency scope. Replacement có thể supersede
-run của version cũ vì active-version guard ngăn output cũ trở lại active.
+hai run cạnh tranh. Sau khi run hiện tại kết thúc, reprocess cùng
+`pipeline_version` vẫn tạo `ProcessingRun`/kết quả mới với `run_id` và
+`reprocess_generation` mới; active-version/lineage guard ngăn output cũ trở
+thành active.
 
 Vì case version và active validation pointer thay đổi atomically, review command
 đồng thời trên `READY_FOR_REVIEW` trả `409` hoặc

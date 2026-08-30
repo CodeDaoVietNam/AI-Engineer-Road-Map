@@ -24,7 +24,8 @@ theo environment. `infrastructure/azure` sở hữu deployment/IaC configuration
 `packages/core` chỉ phụ thuộc standard library + `packages/contracts` và **không
 được import Azure SDK**, resource name, Azure credential type hoặc adapter
 implementation. Business rule, state machine, tenant isolation, retry budget,
-idempotency `document_id + pipeline_version`, citation validation và human review
+API idempotency, worker delivery dedupe theo `run_id + checkpoint/stage`,
+lineage `document_id + pipeline_version`, citation validation và human review
 không thay đổi khi đổi provider.
 
 ```text

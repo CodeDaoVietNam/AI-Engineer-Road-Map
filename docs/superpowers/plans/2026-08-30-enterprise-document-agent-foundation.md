@@ -141,7 +141,7 @@ Expected: every approved type, limit, latency class, and tenant boundary is repr
 - Produces: component responsibilities, data flows, domain vocabulary, invariants, retry behavior, and AI boundaries.
 
 - [ ] **Step 1: Write system overview with Mermaid context/container diagrams and dependency rules.**
-- [ ] **Step 2: Write ingestion pipeline with upload validation, 202 response, transactional outbox, RabbitMQ delivery, checkpoints, retry classification, dead-letter behavior, and `document_id + pipeline_version` idempotency key.**
+- [ ] **Step 2: Write ingestion pipeline with upload validation, 202 response, transactional outbox, RabbitMQ delivery, checkpoints, retry classification, dead-letter behavior, API idempotency, and run/checkpoint delivery dedupe.**
 - [ ] **Step 3: Write extraction/validation design with versioned schemas, standard fields for all five document types, normalization, confidence thresholds, severity model, rule catalog, and evidence contract.**
 - [ ] **Step 4: Write retrieval/Agent design with structure-aware chunks, hybrid retrieval, configuration-based top-k, mandatory filters, seven read-only tools, citation validation, refusal, and prompt-injection boundary.**
 - [ ] **Step 5: Write domain model and state machines with Mermaid diagrams, entity definitions, tenant invariants, document versioning, processing runs, business state and technical processing state.**

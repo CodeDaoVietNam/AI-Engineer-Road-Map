@@ -44,7 +44,11 @@ Không mất document sau khi API acknowledge. `Document` và `DocumentUploaded`
 
 ### CONS-002 — Idempotency/versioning
 
-Redelivery/retry không tạo extraction hoặc chunk trùng theo `document_id + pipeline_version`. Version document cũ không bị ghi đè; mỗi retry/reprocess có `ProcessingRun` riêng và chỉ một successful run là active.
+Redelivery/retry không tạo extraction hoặc chunk trùng trong scope
+`run_id + checkpoint/stage`. `document_id + pipeline_version` giữ lineage và
+active-result comparison, không suppress một reprocess mới; version document
+cũ không bị ghi đè, mỗi retry/reprocess có `ProcessingRun` riêng và chỉ một
+successful run là active.
 
 ### CONS-003 — Review concurrency
 

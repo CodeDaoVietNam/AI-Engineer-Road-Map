@@ -162,8 +162,9 @@ baseline chỉ pass khi các offline gates trong evaluation strategy đạt.
   ở `QUEUED`, không mất acknowledged document.
 - Worker/model/parser unavailable: existing authorized reads vẫn hoạt động;
   processing giữ `QUEUED`/`RETRY_PENDING`/`FAILED`, không thành `REJECTED`.
-- Search/Agent unavailable: direct fields/issues/evidence vẫn theo contract;
-  chat refusal hoặc `CHAT_GROUNDING_UNAVAILABLE`, không unfiltered fallback.
+- Search/Agent semantic evidence failure: chat refusal theo contract; technical
+  dependency/tool/budget/timeout failure: `CHAT_GROUNDING_UNAVAILABLE`, không
+  tính là natural-language refusal và không unfiltered fallback.
 
 ## Liên quan
 

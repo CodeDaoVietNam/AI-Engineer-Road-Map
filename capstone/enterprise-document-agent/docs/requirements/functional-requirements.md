@@ -103,7 +103,7 @@ ID là ổn định để milestone, test và API contract tham chiếu. Mỗi r
 ### ING-002 — Idempotent worker run
 
 - **Actor:** Worker.
-- **Hành vi:** Xử lý at-least-once theo `document_id + pipeline_version` với checkpoint `FILE_VALIDATED → PARSED → CLASSIFIED → EXTRACTED → VALIDATED → CHUNKED → INDEXED → COMPLETED`.
+- **Hành vi:** Xử lý at-least-once, dedupe delivery theo `run_id + checkpoint/stage`, với checkpoint `FILE_VALIDATED → PARSED → CLASSIFIED → EXTRACTED → VALIDATED → CHUNKED → INDEXED → COMPLETED`; `document_id + pipeline_version` chỉ giữ lineage/active-result comparison và không suppress reprocess mới.
 - **Ranh giới quyền:** Worker chỉ dùng identifiers API đã xác minh và giữ tenant scope.
 - **Kết quả quan sát được:** Redelivery/retry không tạo extraction hoặc chunk duplicate; tiến trình run xem được.
 

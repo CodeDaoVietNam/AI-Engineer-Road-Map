@@ -83,9 +83,11 @@ Một lần xử lý kỹ thuật có `run_id`, `tenant_id`, `case_id`, `documen
 `pipeline_version`, retry/reprocess lineage, checkpoint và status `QUEUED`,
 `RUNNING`, `SUCCEEDED`, `RETRY_PENDING` hoặc `FAILED`.
 
-Khóa idempotency logic là `document_id + pipeline_version`; nó không thay
-`run_id`. Duplicate broker delivery của cùng job dùng cùng run/checkpoint và
-không tạo output trùng. Mỗi retry/reprocess được audit bằng `ProcessingRun`
+API idempotency chống lặp cùng request intent; mỗi reprocess được chấp nhận có
+`run_id` và `reprocess_generation` riêng. Duplicate broker delivery của cùng
+job dùng cùng `run_id + checkpoint/stage` và không tạo output trùng.
+`document_id + pipeline_version` là lineage/active-result comparison invariant,
+không phải khóa để suppress một reprocess mới. Mỗi retry/reprocess được audit bằng `ProcessingRun`
 riêng, liên kết predecessor/root run. Chỉ một successful run cho document
 version/pipeline được chọn là active result; việc chọn xảy ra atomically sau
 checkpoint `COMPLETED`.
@@ -217,8 +219,10 @@ flowchart TD
   `tenant_id + case_id + document_type`; record/object cũ bất biến.
 - Chỉ một active `Document` cho mỗi document type trong case; chuyển active là
   transaction có audit, case-version increment và validation invalidation.
-- Idempotency output scope là `document_id + pipeline_version`; stage writes dùng
-  unique/upsert constraints để redelivery không nhân bản.
+- Delivery/output dedupe scope là `run_id + checkpoint/stage` (có thể thêm
+  `message_id`); stage writes dùng unique/upsert constraints để redelivery
+  không nhân bản. `document_id + pipeline_version` chỉ giữ lineage và
+  active-result comparison.
 - Mỗi retry/reprocess có `ProcessingRun` riêng; duplicate delivery không phải
   retry và không tạo run mới.
 - Chỉ `ProcessingRun` đạt `SUCCEEDED` sau `COMPLETED` mới có thể active. Switching

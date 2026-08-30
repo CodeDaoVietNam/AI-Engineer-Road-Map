@@ -173,10 +173,12 @@ stateDiagram-v2
 ```
 
 Checkpoint chỉ tiến về trước trong cùng `pipeline_version`; stage output và
-checkpoint commit atomically. Redelivery đọc checkpoint cuối và resume stage kế
-tiếp. Output/checkpoint của pipeline/schema version khác không được coi là hợp
-lệ cho run hiện hành. Khóa `document_id + pipeline_version` cùng unique/upsert
-constraints ngăn duplicate extracted fields/evidence/chunks.
+checkpoint commit atomically. Redelivery đọc checkpoint cuối của cùng
+`run_id + checkpoint/stage` và resume stage kế tiếp. Output/checkpoint của
+pipeline/schema version khác không được coi là hợp lệ cho run hiện hành.
+Unique/upsert constraints theo run/checkpoint ngăn duplicate extracted
+fields/evidence/chunks; `document_id + pipeline_version` chỉ được dùng cho
+lineage và active-result comparison, không ngăn reprocess mới.
 
 ## Tương tác giữa hai state machine
 
