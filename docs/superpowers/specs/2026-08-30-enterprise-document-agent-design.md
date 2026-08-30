@@ -168,7 +168,7 @@ Lỗi kỹ thuật không được biến thành business status `REJECTED`.
 
 API xác thực user, active membership, role, tenant ownership và case state. Sau đó API validate PDF, stream file vào object storage, tính SHA-256, tạo `Document` và `DocumentUploaded` outbox event trong cùng transaction, rồi trả `202 Accepted` cùng `document_id` và `status_url`.
 
-Outbox publisher gửi message chỉ chứa identifiers đã xác minh, không chứa PDF binary. RabbitMQ dùng at-least-once delivery. Idempotency key là `document_id + pipeline_version`.
+Outbox publisher gửi message chỉ chứa identifiers đã xác minh, không chứa PDF binary. RabbitMQ dùng at-least-once delivery. `Idempotency-Key` ở API chống lặp user intent; worker dedupe theo `run_id + checkpoint/stage`, còn `document_id + pipeline_version` chỉ giữ lineage/active-result comparison và không suppress reprocess mới.
 
 Checkpoint:
 
